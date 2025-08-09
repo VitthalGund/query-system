@@ -1,7 +1,9 @@
 import uvicorn
 import os
 from fastapi import FastAPI
-from .api.v1 import endpoints as v1_endpoints
+# from .api.v1 import endpoints as v1_endpoints
+from app.api.v1 import endpoints as v1_endpoints
+
 
 app = FastAPI(
     title="Intelligent Query-Retrieval System API",
