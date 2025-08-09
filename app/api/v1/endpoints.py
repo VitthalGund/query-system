@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from typing import List
 
 from .schemas import (
     QueryRequest,
@@ -23,7 +22,7 @@ router = APIRouter()
 )
 async def run_submission(
     request: QueryRequest,
-    # api_key: str = Depends(get_api_key),
+    api_key: str = Depends(get_api_key),
 ):
     """
     This endpoint is for on-the-fly document analysis:
