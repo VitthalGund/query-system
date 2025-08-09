@@ -1,6 +1,7 @@
 import tempfile
 import requests
 import os
+import time
 from typing import List
 
 
@@ -71,37 +72,68 @@ async def process_url_and_questions(
     document_url: str, questions: List[str]
 ) -> List[str]:
     """
-    (FOR API) Processes a document from a URL and answers a list of questions about it
+    (FOR API) Processes a single document from a URL and answers a list of questions about it
     using a single, batched LLM call to avoid rate limiting.
     """
     temp_file_path = None
     try:
+        start_time = time.time()
+        print("[RAG LOG] Stage 1/7: Downloading document...")
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
             response = requests.get(document_url)
             response.raise_for_status()
             temp_file.write(response.content)
             temp_file_path = temp_file.name
+        print(
+            f"[RAG LOG] ...Download complete in {time.time() - start_time:.2f} seconds."
+        )
 
+        start_time = time.time()
+        print(
+            f"[RAG LOG] Stage 2/7: Loading document from temporary path: {temp_file_path}"
+        )
         loader = PyPDFLoader(temp_file_path)
         docs = loader.load()
+        print(
+            f"[RAG LOG] ...Loaded {len(docs)} pages in {time.time() - start_time:.2f} seconds."
+        )
+
+        start_time = time.time()
+        print("[RAG LOG] Stage 3/7: Splitting document into chunks...")
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1500, chunk_overlap=200
         )
         splits = text_splitter.split_documents(docs)
+        print(
+            f"[RAG LOG] ...Document split into {len(splits)} chunks in {time.time() - start_time:.2f} seconds."
+        )
+
+        start_time = time.time()
+        print("[RAG LOG] Stage 4/7: Initializing embedding model...")
         embeddings = HuggingFaceEmbeddings(
             model_name=settings.EMBEDDING_MODEL_NAME, model_kwargs={"device": "cpu"}
         )
+        print(
+            f"[RAG LOG] ...Embedding model loaded in {time.time() - start_time:.2f} seconds."
+        )
+
+        # --- Stage 5: Vector Store Creation ---
+        start_time = time.time()
+        print("[RAG LOG] Stage 5/7: Creating in-memory FAISS vector store...")
         vectorstore = FAISS.from_documents(documents=splits, embedding=embeddings)
         retriever = vectorstore.as_retriever(search_kwargs={"k": 10})
+        print(
+            f"[RAG LOG] ...FAISS index created in {time.time() - start_time:.2f} seconds."
+        )
 
+        start_time = time.time()
+        print("[RAG LOG] Stage 6/7: Initializing LLM and building RAG chain...")
         llm = get_llm(
             provider=settings.LLM_PROVIDER, model_name=settings.LLM_MODEL_NAME
         )
-
         formatted_questions = "\n".join(
             [f"{i+1}. {q}" for i, q in enumerate(questions)]
         )
-
         rag_chain = (
             {
                 "context": retriever | format_docs_with_metadata,
@@ -111,19 +143,26 @@ async def process_url_and_questions(
             | llm
             | StrOutputParser()
         )
+        print(f"[RAG LOG] ...Chain built in {time.time() - start_time:.2f} seconds.")
 
-        print(f"Processing {len(questions)} questions in a single batch...")
-
+        start_time = time.time()
+        print(
+            f"[RAG LOG] Stage 7/7: Invoking RAG chain with {len(questions)} batched questions..."
+        )
         combined_answers_str = await rag_chain.ainvoke(formatted_questions)
+        print(
+            f"[RAG LOG] ...Chain invoked, LLM response received in {time.time() - start_time:.2f} seconds."
+        )
 
         answers = [ans.strip() for ans in combined_answers_str.split("---|||---")]
 
         if len(answers) != len(questions):
             print(
-                f"Warning: Mismatch between questions ({len(questions)}) and answers ({len(answers)}). Returning raw response."
+                f"Warning: Mismatch between questions ({len(questions)}) and answers ({len(answers)})."
             )
             return [combined_answers_str]
 
+        print("[RAG LOG] Successfully processed all questions.")
         return answers
 
     except Exception as e:
@@ -131,6 +170,7 @@ async def process_url_and_questions(
         return [f"Error processing request: {e}" for _ in questions]
     finally:
         if temp_file_path and os.path.exists(temp_file_path):
+            print(f"[RAG LOG] Cleaning up temporary file: {temp_file_path}")
             os.unlink(temp_file_path)
 
 
