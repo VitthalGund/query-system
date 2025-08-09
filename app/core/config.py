@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     Application settings loaded from environment variables.
     """
 
+    PORT: int
     API_AUTH_TOKEN: str
 
     LLM_PROVIDER: str = "openai"
@@ -20,7 +21,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: Optional[str] = None
     GOOGLE_API_KEY: Optional[str] = None
 
-    VECTOR_STORE_PROVIDER: str = "faiss"  # "faiss" or "pinecone"
+    VECTOR_STORE_PROVIDER: str = "faiss"
     FAISS_INDEX_PATH: str = "vector_store_data/faiss_index"
     PINECONE_API_KEY: Optional[str] = None
     PINECONE_INDEX_NAME: Optional[str] = None
