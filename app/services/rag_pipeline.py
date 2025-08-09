@@ -1,5 +1,6 @@
 import tempfile
 import requests
+import os
 from typing import List
 
 
@@ -37,86 +38,100 @@ def format_docs_with_metadata(docs: List[Document]) -> str:
             f"Content:\n{doc.page_content}"
         )
         formatted_docs.append(doc_entry)
-
     return "\n\n".join(formatted_docs)
 
 
-DETAILED_PROMPT_TEMPLATE = """
+BATCH_PROMPT_TEMPLATE = """
 **Role:** You are a highly specialized AI assistant for analyzing insurance policy documents. Your primary function is to provide accurate, concise, and verifiable answers based exclusively on the provided text.
 
-**Task:** Answer the user's question using ONLY the context provided below.
+**Task:** Answer every user question from the list below using ONLY the context provided.
 
 **Instructions:**
 1.  **Analyze the Context:** Carefully read all the provided document excerpts.
-2.  **Strict Grounding:** Base your answer 100% on the information within the provided documents. Do NOT use any external knowledge or make assumptions.
-3.  **Direct Quotation:** When possible, directly quote relevant phrases or sentences from the context to support your answer.
-4.  **Cite Sources:** After each piece of information in your answer, you MUST cite the source document and page number in parentheses, like this: (Source: policy_document.pdf, Page: 5).
-5.  **Synthesize Information:** If multiple documents provide relevant information, synthesize them into a coherent answer, citing each source appropriately.
-6.  **Handle Missing Information:** If the answer cannot be found in the provided context, you MUST explicitly state: "The provided documents do not contain information about this topic." Do not try to guess the answer.
-7.  **Be Concise:** Provide a clear and direct answer to the question. Avoid conversational filler.
+2.  **Strict Grounding:** Base your answers 100% on the information within the provided documents. Do NOT use any external knowledge.
+3.  **Answer All Questions:** You will be given a numbered list of questions. You MUST answer every single question.
+4.  **Handle Missing Information:** If the answer to a specific question cannot be found in the context, you MUST explicitly state for that question: "The provided documents do not contain information about this topic."
+5.  **Critical: Use a Specific Separator:** Separate the answer for each question with the exact delimiter `---|||---`. This is essential for parsing. Do not use any other separator.
+
+**Example Response Format:**
+Answer to Question 1... ---|||--- Answer to Question 2... ---|||--- The provided documents do not contain information about this topic. ---|||--- Answer to Question 4...
 
 **Provided Context:**
 {context}
 
-**User's Question:**
+**User's Questions:**
 {question}
 
-**Expert Answer:**
+**Expert Answers (separated by '---|||---'):**
 """
-PROMPT = PromptTemplate.from_template(DETAILED_PROMPT_TEMPLATE)
+BATCH_PROMPT = PromptTemplate.from_template(BATCH_PROMPT_TEMPLATE)
 
 
 async def process_url_and_questions(
     document_url: str, questions: List[str]
 ) -> List[str]:
     """
-    (FOR API) Processes a single document from a URL and answers multiple questions about it.
-    This creates an in-memory vector store for each request.
+    (FOR API) Processes a document from a URL and answers a list of questions about it
+    using a single, batched LLM call to avoid rate limiting.
     """
-    answers = []
+    temp_file_path = None
     try:
-        with tempfile.NamedTemporaryFile(delete=True, suffix=".pdf") as temp_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
             response = requests.get(document_url)
             response.raise_for_status()
             temp_file.write(response.content)
-            temp_file.flush()
+            temp_file_path = temp_file.name
 
-            loader = PyPDFLoader(temp_file.name)
-            docs = loader.load()
-
+        loader = PyPDFLoader(temp_file_path)
+        docs = loader.load()
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000, chunk_overlap=200
+            chunk_size=1500, chunk_overlap=200
         )
         splits = text_splitter.split_documents(docs)
-
         embeddings = HuggingFaceEmbeddings(
             model_name=settings.EMBEDDING_MODEL_NAME, model_kwargs={"device": "cpu"}
         )
         vectorstore = FAISS.from_documents(documents=splits, embedding=embeddings)
-        retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+        retriever = vectorstore.as_retriever(search_kwargs={"k": 10})
 
-        llm = get_llm(provider="openai", model_name="gpt-4o")
+        llm = get_llm(
+            provider=settings.LLM_PROVIDER, model_name=settings.LLM_MODEL_NAME
+        )
+
+        formatted_questions = "\n".join(
+            [f"{i+1}. {q}" for i, q in enumerate(questions)]
+        )
 
         rag_chain = (
             {
                 "context": retriever | format_docs_with_metadata,
                 "question": RunnablePassthrough(),
             }
-            | PROMPT
+            | BATCH_PROMPT
             | llm
             | StrOutputParser()
         )
 
-        for question in questions:
-            print(f"  - Answering (on-the-fly): '{question}'")
-            answer = await rag_chain.ainvoke(question)
-            answers.append(answer.strip())
+        print(f"Processing {len(questions)} questions in a single batch...")
+
+        combined_answers_str = await rag_chain.ainvoke(formatted_questions)
+
+        answers = [ans.strip() for ans in combined_answers_str.split("---|||---")]
+
+        if len(answers) != len(questions):
+            print(
+                f"Warning: Mismatch between questions ({len(questions)}) and answers ({len(answers)}). Returning raw response."
+            )
+            return [combined_answers_str]
 
         return answers
 
     except Exception as e:
         print(f"An error occurred in the on-the-fly RAG pipeline: {e}")
         return [f"Error processing request: {e}" for _ in questions]
+    finally:
+        if temp_file_path and os.path.exists(temp_file_path):
+            os.unlink(temp_file_path)
 
 
 async def process_query_from_kb(question: str) -> dict:
@@ -126,7 +141,9 @@ async def process_query_from_kb(question: str) -> dict:
     """
     try:
         retriever = get_retriever(top_k=5)
-        llm = get_llm(provider="openai", model_name="gpt-4o")
+        llm = get_llm(
+            provider=settings.LLM_PROVIDER, model_name=settings.LLM_MODEL_NAME
+        )
 
         rag_chain = (
             {

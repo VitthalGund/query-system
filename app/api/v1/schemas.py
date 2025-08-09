@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any
+from typing import List, Optional
 
 
 class QueryRequest(BaseModel):
@@ -38,8 +38,8 @@ class Source(BaseModel):
     """
 
     content: str
-    file_path: str | None = None
-    page_number: int | None = None
+    file_path: Optional[str] = None
+    page_number: Optional[int] = None
 
 
 class KnowledgeBaseQueryResponse(BaseModel):

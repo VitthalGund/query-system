@@ -23,7 +23,7 @@ router = APIRouter()
 )
 async def run_submission(
     request: QueryRequest,
-    api_key: str = Depends(get_api_key),
+    # api_key: str = Depends(get_api_key),
 ):
     """
     This endpoint is for on-the-fly document analysis:
